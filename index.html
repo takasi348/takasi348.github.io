@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Gmail OTP 取得</title>
+  <meta name="theme-color" content="#3367d6"/>
+  <style>
+    body{font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Roboto,Segoe UI,sans-serif;padding:18px;max-width:700px;margin:auto;}
+    button{margin:8px 0;padding:10px 14px;border-radius:8px;border:1px solid #ccc;background:#f6f6f6;}
+    #otp{font-size:1.6rem;margin-top:12px;padding:6px 10px;border:1px dashed #999;display:inline-block;min-width:160px;text-align:center;}
+    small{color:#666;}
+  </style>
+</head>
+<body>
+  <h2>Gmail OTP 取得（自分用）</h2>
+  <p><small>Google にログインし、受信メールからワンタイムコードを探します。</small></p>
+
+  <div>
+    <button id="signin">Google に接続</button>
+    <button id="signout" style="display:none">サインアウト</button>
+  </div>
+  <div>
+    <button id="fetch" disabled>最新の OTP を探す</button>
+    <button id="copy" disabled>コピー</button>
+  </div>
+
+  <div style="margin-top:16px;">
+    <div id="otp">—</div>
+    <div><small id="status"></small></div>
+  </div>
+
+  <script src="https://apis.google.com/js/api.js"></script>
+  <script>
+    const CLIENT_ID = '349241478693-q833fmg76ghb4s1vdni9j91rmfhednno.apps.googleusercontent.com'; // ←ここを書き換えて
+    const SCOPES = 'https://www.googleapis.com/auth/gmail.readonly';
+
+    const signinBtn = document.getElementById('signin');
+    const signoutBtn = document.getElementById('signout');
+    const fetchBtn = document.getElementById('fetch');
+    const copyBtn = document.getElementById('copy');
+    const otpEl = document.getElementById('otp');
+    const statusEl = document.getElementById('status');
+
+    let googleAuthInstance = null;
+    let lastOtp = null;
+
+    function setStatus(msg){ statusEl.textContent = msg || ''; }
+
+    async function initClient() {
+      try {
+        await gapi.client.init({
+          clientId: CLIENT_ID,
+          scope: SCOPES,
+          discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest"]
+        });
+        googleAuthInstance = gapi.auth2.getAuthInstance();
+        googleAuthInstance.isSignedIn.listen(updateSigninStatus);
+        updateSigninStatus(googleAuthInstance.isSignedIn.get());
+      } catch (e) {
+        console.error(e);
+        setStatus('gapi 初期化に失敗: ' + e.message);
+      }
+    }
+
+    function updateSigninStatus(isSignedIn) {
+      if (isSignedIn) {
+        signinBtn.style.display = 'none';
+        signoutBtn.style.display = '';
+        fetchBtn.disabled = false;
+        setStatus('Google に接続済み');
+      } else {
+        signinBtn.style.display = '';
+        signoutBtn.style.display = 'none';
+        fetchBtn.disabled = true;
+        setStatus('未接続');
+      }
+    }
+
+    function extractOtpFromText(text) {
+      if (!text) return null;
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+      if (lines.length >= 2) {
+        const match = lines[1].match(/\b(\d{4,8})\b/);
+        if (match) return match[1];
+      }
+      const match = text.match(/\b(\d{4,8})\b/);
+      return match ? match[1] : null;
+    }
+
+    async function findLatestOtp() {
+      setStatus('検索中…');
+      otpEl.textContent = '—';
+      lastOtp = null;
+      try {
+        const q = 'newer_than:1d (ワンタイムパスワード OR code OR 認証)';
+        const listResp = await gapi.client.gmail.users.messages.list({
+          userId: 'me',
+          q,
+          maxResults: 10
+        });
+        const msgs = listResp.result.messages || [];
+        for (const m of msgs) {
+          const res = await gapi.client.gmail.users.messages.get({userId:'me',id:m.id,format:'full'});
+          const body = atob((res.result.payload.parts?.find(p=>p.mimeType==='text/plain')?.body?.data || res.result.payload.body?.data || '').replace(/-/g,'+').replace(/_/g,'/'));
+          const otp = extractOtpFromText(body);
+          if (otp) {
+            lastOtp = otp;
+            otpEl.textContent = otp;
+            copyBtn.disabled = false;
+            setStatus('検出しました');
+            return;
+          }
+        }
+        setStatus('見つかりませんでした');
+      } catch (e) {
+        console.error(e);
+        setStatus('エラー: ' + e.message);
+      }
+    }
+
+    async function copyToClipboard(text){
+      try{
+        await navigator.clipboard.writeText(text);
+        setStatus('コピーしました');
+      }catch(e){
+        setStatus('コピー失敗');
+      }
+    }
+
+    // ✅ 安全なロード順に修正
+    window.addEventListener('load', ()=>{
+      gapi.load('client:auth2', initClient);
+    });
+
+    signinBtn.onclick = ()=>googleAuthInstance?.signIn();
+    signoutBtn.onclick = ()=>googleAuthInstance?.signOut();
+    fetchBtn.onclick = ()=>findLatestOtp();
+    copyBtn.onclick = ()=>copyToClipboard(lastOtp);
+  </script>
+</body>
+</html>
